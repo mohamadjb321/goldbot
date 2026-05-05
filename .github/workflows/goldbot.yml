@@ -2,7 +2,7 @@ name: Gold Bot
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -19,11 +19,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests tradingeconomics
+        run: pip install requests
 
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          TE_API_KEY: ${{ secrets.TE_API_KEY }}
+          TETHER_URL: ${{ vars.TETHER_URL }}
         run: python main.py

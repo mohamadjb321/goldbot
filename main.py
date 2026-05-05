@@ -1,95 +1,93 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
-from typing import Any
+from html.parser import HTMLParser
 
 import requests
 
-OUNCE_TO_GRAM = 31.103431
-TE_LOGIN = os.getenv("TE_API_KEY", "guest:guest")
+KITCO_GOLD_URL = "https://www.kitco.com/charts/gold"
+TETHER_URL = os.getenv("TETHER_URL") or "https://www.tgju.org/profile/crypto-tether"
 
 
-def as_records(data: Any) -> list[dict[str, Any]]:
-    if data is None:
-        return []
-    if hasattr(data, "to_dict"):
-        return data.to_dict("records")
-    if isinstance(data, dict):
-        return [data]
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    return []
+class TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lines: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self.lines.append(text)
 
 
-def number_from_record(record: dict[str, Any]) -> float | None:
-    for key in ("Last", "last", "Close", "close", "Price", "price", "Value", "value"):
-        value = record.get(key)
-        if value is None:
-            continue
-        try:
-            return float(str(value).replace(",", ""))
-        except ValueError:
-            continue
-    return None
-
-
-def valid_gold(value: float) -> bool:
-    return 1_000 <= value <= 10_000
-
-
-def valid_usd_irr(value: float) -> bool:
-    return 10_000 <= value <= 2_000_000
-
-
-def tradingeconomics_symbol(symbols: str | list[str]) -> float:
-    import tradingeconomics as te
-
-    te.login(TE_LOGIN)
-    data = te.getMarketsBySymbol(symbols=symbols)
-    for record in as_records(data):
-        value = number_from_record(record)
-        if value is not None:
-            return value
-    raise ValueError(f"No numeric market value found for {symbols!r}")
-
-
-def get_gold_ounce() -> float:
-    try:
-        value = tradingeconomics_symbol(["gold", "gac:com", "xauusd:cur"])
-        if valid_gold(value):
-            return value
-    except Exception:
-        pass
-
+def fetch(url: str) -> str:
     response = requests.get(
-        "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+        url,
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=30,
     )
     response.raise_for_status()
-    result = response.json()["chart"]["result"][0]
-    value = float(result["meta"]["regularMarketPrice"])
-    if not valid_gold(value):
-        raise ValueError(f"Invalid fallback gold price: {value}")
-    return value
+    return response.text
 
 
-def get_usd_irr() -> float:
-    try:
-        value = tradingeconomics_symbol(["usdirr:cur", "usd/irr:cur", "usd"])
-        if valid_usd_irr(value):
-            return value
-    except Exception:
-        pass
+def html_lines(html: str) -> list[str]:
+    parser = TextExtractor()
+    parser.feed(html)
+    return parser.lines
 
-    response = requests.get("https://open.er-api.com/v6/latest/USD", timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    value = float(data["rates"]["IRR"])
-    if not valid_usd_irr(value):
-        raise ValueError(f"Invalid fallback USD/IRR price: {value}")
-    return value
+
+def parse_number(value: str) -> float:
+    digits = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    value = value.translate(digits)
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", value)
+    if not match:
+        raise ValueError(f"Could not parse number from {value!r}")
+    return float(match.group(0).replace(",", ""))
+
+
+def get_ounce_price() -> float:
+    html = fetch(KITCO_GOLD_URL)
+    lines = html_lines(html)
+    price_pattern = re.compile(r"^\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^\d+(?:\.\d+)?$")
+
+    for index, line in enumerate(lines):
+        if line.casefold() == "bid":
+            for candidate in lines[index + 1 : index + 10]:
+                if price_pattern.match(candidate):
+                    return parse_number(candidate)
+
+    for pattern in (
+        r'"bid"\s*:\s*"?(\d[\d,]*(?:\.\d+)?)"?',
+        r"Bid[^0-9]{0,80}(\d[\d,]*(?:\.\d+)?)",
+    ):
+        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+        if match:
+            return parse_number(match.group(1))
+
+    raise ValueError("Could not find Kitco ounce price")
+
+
+def get_tether_price() -> float:
+    html = fetch(TETHER_URL)
+
+    patterns = (
+        r"<span[^>]*>\s*([۰-۹٠-٩\d,]+)\s*</span>\s*<span[^>]*>\s*تومان\s*</span>",
+        r"([۰-۹٠-٩\d,]+)\s*</span>\s*<span[^>]*>\s*تومان\s*</span>",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+        if match:
+            return parse_number(match.group(1))
+
+    lines = html_lines(html)
+    for index, line in enumerate(lines):
+        if line == "تومان" and index > 0:
+            return parse_number(lines[index - 1])
+
+    raise ValueError("Could not find Tether price in Toman")
 
 
 def fmt(value: float) -> str:
@@ -97,19 +95,24 @@ def fmt(value: float) -> str:
 
 
 def build_message() -> str:
-    ounce = get_gold_ounce()
-    usd = get_usd_irr()
+    ounce = get_ounce_price()
+    tether = get_tether_price()
 
-    gold_999 = ounce * usd * OUNCE_TO_GRAM
-    gold_750 = (750 / 999) * ounce * usd * OUNCE_TO_GRAM
-    seke = (8.133 * ounce * usd * 0.9 / (0.9999 * OUNCE_TO_GRAM)) + 50_000
+    gold_999 = (tether * ounce) / 31.1034
+    gold_750 = ((tether * ounce) / 31.107) * (750 / 999.9)
+    seke = (((tether * ounce) * 8.133 * 90) / (99.99 * 31.1034)) + 5000
+    nim_seke = (((tether * ounce) * 4.665 * 90) / (99.99 * 31.1034)) + 5000
+    rob_seke = (((tether * ounce) * 2.03225 * 90) / (99.99 * 31.1034)) + 5000
 
     return (
-        f"Ounce: {fmt(ounce)}\n"
-        f"USD: {fmt(usd)}\n\n"
-        f"طلای 24 عیار:\n{fmt(gold_999)} تومان\n\n"
-        f"قیمت ذاتی طلای 18 عیار:\n{fmt(gold_750)} تومان\n\n"
-        f"قیمت ذاتی سکه:\n{fmt(seke)} تومان\n\n"
+        "تمام قیمتهای زیر به تومان است.\n\n"
+        f"Ounce: {fmt(ounce)} dollar\n"
+        f"Tether: {fmt(tether)} تومان\n\n"
+        f"قیمت ذاتی طلای 24 عیار:\n{fmt(gold_999)}\n\n"
+        f"قیمت ذاتی طلای 18 عیار:\n{fmt(gold_750)}\n\n"
+        f"قیمت ذاتی سکه:\n{fmt(seke)}\n\n"
+        f"قیمت ذاتی نیم سکه:\n{fmt(nim_seke)}\n\n"
+        f"قیمت ذاتی ربع سکه:\n{fmt(rob_seke)}\n\n"
         f"Time: {datetime.now():%Y-%m-%d %H:%M}"
     )
 
@@ -134,7 +137,7 @@ def main() -> None:
     try:
         message = build_message()
     except Exception as exc:
-        message = f"Error fetching gold prices:\n{exc}\n\nTime: {datetime.now():%Y-%m-%d %H:%M}"
+        message = f"Error fetching price data:\n{exc}\n\nTime: {datetime.now():%Y-%m-%d %H:%M}"
     send_message(message)
 
 

@@ -2,7 +2,7 @@ name: Gold Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "26,56 * * * *"
   workflow_dispatch:
 
 jobs:

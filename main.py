@@ -1,74 +1,95 @@
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime
-from html.parser import HTMLParser
+from typing import Any
 
 import requests
 
-KITCO_GOLD_URL = "https://www.kitco.com/charts/gold"
-BONBAST_URL = "https://www.bon-bast.com/"
 OUNCE_TO_GRAM = 31.103431
+TE_LOGIN = os.getenv("TE_API_KEY", "guest:guest")
 
 
-class TextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.lines: list[str] = []
+def as_records(data: Any) -> list[dict[str, Any]]:
+    if data is None:
+        return []
+    if hasattr(data, "to_dict"):
+        return data.to_dict("records")
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
 
-    def handle_data(self, data: str) -> None:
-        text = data.strip()
-        if text:
-            self.lines.append(text)
+
+def number_from_record(record: dict[str, Any]) -> float | None:
+    for key in ("Last", "last", "Close", "close", "Price", "price", "Value", "value"):
+        value = record.get(key)
+        if value is None:
+            continue
+        try:
+            return float(str(value).replace(",", ""))
+        except ValueError:
+            continue
+    return None
 
 
-def fetch(url: str) -> str:
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+def valid_gold(value: float) -> bool:
+    return 1_000 <= value <= 10_000
+
+
+def valid_usd_irr(value: float) -> bool:
+    return 10_000 <= value <= 2_000_000
+
+
+def tradingeconomics_symbol(symbols: str | list[str]) -> float:
+    import tradingeconomics as te
+
+    te.login(TE_LOGIN)
+    data = te.getMarketsBySymbol(symbols=symbols)
+    for record in as_records(data):
+        value = number_from_record(record)
+        if value is not None:
+            return value
+    raise ValueError(f"No numeric market value found for {symbols!r}")
+
+
+def get_gold_ounce() -> float:
+    try:
+        value = tradingeconomics_symbol(["gold", "gac:com", "xauusd:cur"])
+        if valid_gold(value):
+            return value
+    except Exception:
+        pass
+
+    response = requests.get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
     response.raise_for_status()
-    return response.text
+    result = response.json()["chart"]["result"][0]
+    value = float(result["meta"]["regularMarketPrice"])
+    if not valid_gold(value):
+        raise ValueError(f"Invalid fallback gold price: {value}")
+    return value
 
 
-def parse_number(value: str) -> float:
-    digits = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
-    match = re.search(r"\d[\d,]*(?:\.\d+)?", value.translate(digits))
-    if not match:
-        raise ValueError(f"Could not parse number from {value!r}")
-    return float(match.group(0).replace(",", ""))
+def get_usd_irr() -> float:
+    try:
+        value = tradingeconomics_symbol(["usdirr:cur", "usd/irr:cur", "usd"])
+        if valid_usd_irr(value):
+            return value
+    except Exception:
+        pass
 
-
-def html_lines(html: str) -> list[str]:
-    parser = TextExtractor()
-    parser.feed(html)
-    return parser.lines
-
-
-def get_ounce_bid() -> float:
-    html = fetch(KITCO_GOLD_URL)
-    price_pattern = re.compile(r"^\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^\d+(?:\.\d+)?$")
-
-    for index, line in enumerate(html_lines(html)):
-        if line.casefold() == "bid":
-            for candidate in html_lines(html)[index + 1 : index + 10]:
-                if price_pattern.match(candidate):
-                    return parse_number(candidate)
-
-    for pattern in (r'"bid"\s*:\s*"?(\d[\d,]*(?:\.\d+)?)"?', r"Bid[^0-9]{0,80}(\d[\d,]*(?:\.\d+)?)"):
-        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
-        if match:
-            return parse_number(match.group(1))
-
-    raise ValueError("Could not find Kitco ounce bid price")
-
-
-def get_usd_price() -> float:
-    html = fetch(BONBAST_URL)
-    match = re.search(r'id=["\']usd1["\'][^>]*>\s*([^<]+)', html, re.IGNORECASE)
-    if not match:
-        match = re.search(r'["\']usd1["\']\s*:\s*["\']?([^,"\'}<\s]+)', html, re.IGNORECASE)
-    if not match:
-        raise ValueError("Could not find USD price with id='usd1'")
-    return parse_number(match.group(1))
+    response = requests.get("https://open.er-api.com/v6/latest/USD", timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    value = float(data["rates"]["IRR"])
+    if not valid_usd_irr(value):
+        raise ValueError(f"Invalid fallback USD/IRR price: {value}")
+    return value
 
 
 def fmt(value: float) -> str:
@@ -76,12 +97,12 @@ def fmt(value: float) -> str:
 
 
 def build_message() -> str:
-    ounce = get_ounce_bid()
-    usd = get_usd_price()
+    ounce = get_gold_ounce()
+    usd = get_usd_irr()
 
     gold_999 = ounce * usd * OUNCE_TO_GRAM
     gold_750 = (750 / 999) * ounce * usd * OUNCE_TO_GRAM
-    seke = (8.133 * ounce * usd * 0.9 / (0.9999 * OUNCE_TO_GRAM)) + 50000
+    seke = (8.133 * ounce * usd * 0.9 / (0.9999 * OUNCE_TO_GRAM)) + 50_000
 
     return (
         f"Ounce: {fmt(ounce)}\n"

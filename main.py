@@ -4,11 +4,13 @@ import os
 import re
 from datetime import datetime
 from html.parser import HTMLParser
+from typing import Any
 
 import requests
 
 KITCO_GOLD_URL = "https://www.kitco.com/charts/gold"
-TETHER_URL = os.getenv("TETHER_URL") or "https://www.tgju.org/profile/crypto-tether"
+TETHER_URL = os.getenv("TETHER_URL", "")
+NOBITEX_USDT_URL = "https://apiv2.nobitex.ir/v3/orderbook/USDTIRT"
 
 
 class TextExtractor(HTMLParser):
@@ -23,13 +25,15 @@ class TextExtractor(HTMLParser):
 
 
 def fetch(url: str) -> str:
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=30,
-    )
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
     response.raise_for_status()
     return response.text
+
+
+def fetch_json(url: str) -> dict[str, Any]:
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 def html_lines(html: str) -> list[str]:
@@ -69,9 +73,11 @@ def get_ounce_price() -> float:
     raise ValueError("Could not find Kitco ounce price")
 
 
-def get_tether_price() -> float:
-    html = fetch(TETHER_URL)
+def get_tether_from_webpage() -> float:
+    if not TETHER_URL:
+        raise ValueError("TETHER_URL is not set")
 
+    html = fetch(TETHER_URL)
     patterns = (
         r"<span[^>]*>\s*([۰-۹٠-٩\d,]+)\s*</span>\s*<span[^>]*>\s*تومان\s*</span>",
         r"([۰-۹٠-٩\d,]+)\s*</span>\s*<span[^>]*>\s*تومان\s*</span>",
@@ -84,10 +90,38 @@ def get_tether_price() -> float:
 
     lines = html_lines(html)
     for index, line in enumerate(lines):
-        if line == "تومان" and index > 0:
+        if "تومان" in line and index > 0:
             return parse_number(lines[index - 1])
 
-    raise ValueError("Could not find Tether price in Toman")
+    raise ValueError("Could not find Tether price in webpage")
+
+
+def get_tether_from_nobitex() -> float:
+    data = fetch_json(NOBITEX_USDT_URL)
+
+    for key in ("lastTradePrice", "lastUpdatePrice", "mark"):
+        value = data.get(key)
+        if value:
+            return parse_number(str(value))
+
+    bids = data.get("bids") or []
+    asks = data.get("asks") or []
+
+    if bids and asks:
+        return (parse_number(str(bids[0][0])) + parse_number(str(asks[0][0]))) / 2
+    if asks:
+        return parse_number(str(asks[0][0]))
+    if bids:
+        return parse_number(str(bids[0][0]))
+
+    raise ValueError("Could not find Tether price from Nobitex")
+
+
+def get_tether_price() -> float:
+    try:
+        return get_tether_from_webpage()
+    except Exception:
+        return get_tether_from_nobitex()
 
 
 def fmt(value: float) -> str:
@@ -120,11 +154,7 @@ def build_message() -> str:
 def send_message(text: str) -> None:
     response = requests.post(
         f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
-        json={
-            "chat_id": os.environ["CHAT_ID"],
-            "text": text,
-            "disable_web_page_preview": True,
-        },
+        json={"chat_id": os.environ["CHAT_ID"], "text": text, "disable_web_page_preview": True},
         timeout=30,
     )
     response.raise_for_status()

@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -128,6 +129,10 @@ def fmt(value: float) -> str:
     return f"{round(value):,}"
 
 
+def tehran_time() -> str:
+    return datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+
+
 def build_message() -> str:
     ounce = get_ounce_price()
     tether = get_tether_price()
@@ -139,15 +144,14 @@ def build_message() -> str:
     rob_seke = (((tether * ounce) * 2.03225 * 90) / (99.99 * 31.1034)) + 5000
 
     return (
-        "تمام قیمتهای زیر به تومان است.\n\n"
         f"Ounce: {fmt(ounce)} dollar\n"
-        f"Tether: {fmt(tether)} تومان\n\n"
-        f"قیمت ذاتی طلای 24 عیار:\n{fmt(gold_999)}\n\n"
-        f"قیمت ذاتی طلای 18 عیار:\n{fmt(gold_750)}\n\n"
-        f"قیمت ذاتی سکه:\n{fmt(seke)}\n\n"
-        f"قیمت ذاتی نیم سکه:\n{fmt(nim_seke)}\n\n"
-        f"قیمت ذاتی ربع سکه:\n{fmt(rob_seke)}\n\n"
-        f"Time: {datetime.now():%Y-%m-%d %H:%M}"
+        f"Tether: {fmt(tether)} ریال\n\n"
+        f"قیمت ذاتی طلای 24 عیار:\n{fmt(gold_999)} ریال\n\n"
+        f"قیمت ذاتی طلای 18 عیار:\n{fmt(gold_750)} ریال\n\n"
+        f"قیمت ذاتی سکه:\n{fmt(seke)} ریال\n\n"
+        f"قیمت ذاتی نیم سکه:\n{fmt(nim_seke)} ریال\n\n"
+        f"قیمت ذاتی ربع سکه:\n{fmt(rob_seke)} ریال\n\n"
+        f"Time: {tehran_time()} (Tehran)"
     )
 
 
@@ -167,7 +171,7 @@ def main() -> None:
     try:
         message = build_message()
     except Exception as exc:
-        message = f"Error fetching price data:\n{exc}\n\nTime: {datetime.now():%Y-%m-%d %H:%M}"
+        message = f"Error fetching price data:\n{exc}\n\nTime: {tehran_time()} (Tehran)"
     send_message(message)
 
 

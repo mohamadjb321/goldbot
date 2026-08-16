@@ -68,7 +68,14 @@ class BrsApiTests(unittest.TestCase):
         request.assert_called_once_with(
             main.BRSAPI_GOLD_URL,
             params={"key": "secret"},
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+                "User-Agent": "curl/8.7.1",
+                "Referer": "https://brsapi.ir/",
+                "Cache-Control": "no-cache",
+                "Host": "Api.BrsApi.ir",
+            },
             timeout=30,
         )
 

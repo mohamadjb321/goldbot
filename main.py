@@ -94,7 +94,14 @@ def get_brsapi_market_prices() -> dict[str, MarketPrice]:
     response = requests.get(
         BRSAPI_GOLD_URL,
         params={"key": api_key},
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+            "User-Agent": "curl/8.7.1",
+            "Referer": "https://brsapi.ir/",
+            "Cache-Control": "no-cache",
+            "Host": "Api.BrsApi.ir",
+        },
         timeout=30,
     )
     response.raise_for_status()
@@ -298,7 +305,11 @@ def main() -> None:
     try:
         message = build_message()
     except Exception as exc:
-        message = f"Error fetching price data:\n{safe_error_message(exc)}\n\nTime: {tehran_time()} (Tehran)"
+        # Do not publish operational failures to the public channel. Raising
+        # also makes GitHub Actions fail visibly instead of reporting success.
+        raise RuntimeError(
+            f"Error fetching price data: {safe_error_message(exc)}"
+        ) from exc
     send_message(message)
 
 

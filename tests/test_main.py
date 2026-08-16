@@ -105,6 +105,7 @@ class BrsApiTests(unittest.TestCase):
         self.assertIn("سکه امامی", report)
         self.assertIn("بازار: 189,000,000 تومان", report)
         self.assertIn("نیم‌سکه", report)
+        self.assertIn("ذاتی: 92,672,688 تومان", report)
         self.assertIn("بازار: 96,000,000 تومان", report)
         self.assertEqual(report.count("حباب:"), 3)
         self.assertIn("تتر: 1,800,000 ریال", report)

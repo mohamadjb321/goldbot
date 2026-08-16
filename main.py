@@ -241,7 +241,8 @@ def build_message() -> str:
 
     gold_750 = ((tether * ounce) / 31.107) * (750 / 999.9)
     seke = (((tether * ounce) * 8.133 * 90) / (99.99 * 31.1034)) + 5000
-    nim_seke = (((tether * ounce) * 4.665 * 90) / (99.99 * 31.1034)) + 5000
+    # Official half-coin gross weight is 4.0665 grams (0.900 fineness).
+    nim_seke = (((tether * ounce) * 4.0665 * 90) / (99.99 * 31.1034)) + 5000
 
     # The existing intrinsic formulas use the Nobitex IRT payload as rial.
     # BrsApi explicitly returns these three market prices in toman, so convert

@@ -24,5 +24,6 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          BRSAPI_API_KEY: ${{ secrets.BRSAPI_API_KEY }}
           TETHER_URL: ${{ vars.TETHER_URL }}
         run: python main.py

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any
@@ -12,6 +13,21 @@ import requests
 KITCO_GOLD_URL = "https://www.kitco.com/charts/gold"
 TETHER_URL = os.getenv("TETHER_URL", "")
 NOBITEX_USDT_URL = "https://apiv2.nobitex.ir/v3/orderbook/USDTIRT"
+BRSAPI_GOLD_URL = "https://Api.BrsApi.ir/Market/Gold_Currency.php"
+
+MARKET_SYMBOLS = {
+    "gold_18k": "IR_GOLD_18K",
+    "coin_emami": "IR_COIN_EMAMI",
+    "coin_half": "IR_COIN_HALF",
+}
+
+
+@dataclass(frozen=True)
+class MarketPrice:
+    price: float
+    unit: str
+    date: str
+    time: str
 
 
 class TextExtractor(HTMLParser):
@@ -35,6 +51,54 @@ def fetch_json(url: str) -> dict[str, Any]:
     response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
     response.raise_for_status()
     return response.json()
+
+
+def parse_brsapi_market_prices(payload: object) -> dict[str, MarketPrice]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("gold"), list):
+        raise ValueError("Invalid BrsApi gold response")
+
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for row in payload["gold"]:
+        if isinstance(row, dict) and isinstance(row.get("symbol"), str):
+            by_symbol[row["symbol"]] = row
+
+    result: dict[str, MarketPrice] = {}
+    for key, symbol in MARKET_SYMBOLS.items():
+        row = by_symbol.get(symbol)
+        if row is None:
+            raise ValueError(f"Missing BrsApi symbol: {symbol}")
+
+        unit = str(row.get("unit", "")).strip()
+        if unit != "تومان":
+            raise ValueError(f"Unexpected BrsApi unit for {symbol}: {unit or 'missing'}")
+
+        price = parse_number(str(row.get("price", "")))
+        if price <= 0:
+            raise ValueError(f"Invalid BrsApi price for {symbol}")
+
+        date = str(row.get("date", "")).strip()
+        time = str(row.get("time", "")).strip()
+        if not date or not time:
+            raise ValueError(f"Missing BrsApi timestamp for {symbol}")
+
+        result[key] = MarketPrice(price=price, unit=unit, date=date, time=time)
+
+    return result
+
+
+def get_brsapi_market_prices() -> dict[str, MarketPrice]:
+    api_key = os.environ.get("BRSAPI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("BRSAPI_API_KEY is not set")
+
+    response = requests.get(
+        BRSAPI_GOLD_URL,
+        params={"key": api_key},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return parse_brsapi_market_prices(response.json())
 
 
 def html_lines(html: str) -> list[str]:
@@ -129,6 +193,36 @@ def fmt(value: float) -> str:
     return f"{round(value):,}"
 
 
+def bubble(market: float, intrinsic: float) -> tuple[float, float]:
+    if intrinsic <= 0:
+        raise ValueError("Intrinsic price must be positive")
+    amount = market - intrinsic
+    return amount, (amount / intrinsic) * 100
+
+
+def signed_fmt(value: float) -> str:
+    return f"{value:+,.0f}"
+
+
+def signed_percent(value: float) -> str:
+    return f"{value:+.1f}%"
+
+
+def market_timestamp(prices: dict[str, MarketPrice]) -> str:
+    timestamps = {(item.date, item.time) for item in prices.values()}
+    if len(timestamps) == 1:
+        date, time = next(iter(timestamps))
+        return f"{date} {time}"
+    return " | ".join(
+        f"{label}: {prices[key].date} {prices[key].time}"
+        for key, label in (
+            ("gold_18k", "طلا"),
+            ("coin_emami", "سکه"),
+            ("coin_half", "نیم‌سکه"),
+        )
+    )
+
+
 def tehran_time() -> str:
     return datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
 
@@ -136,23 +230,56 @@ def tehran_time() -> str:
 def build_message() -> str:
     ounce = get_ounce_price()
     tether = get_tether_price()
+    market = get_brsapi_market_prices()
 
-    gold_999 = (tether * ounce) / 31.1034
     gold_750 = ((tether * ounce) / 31.107) * (750 / 999.9)
     seke = (((tether * ounce) * 8.133 * 90) / (99.99 * 31.1034)) + 5000
     nim_seke = (((tether * ounce) * 4.665 * 90) / (99.99 * 31.1034)) + 5000
-    rob_seke = (((tether * ounce) * 2.03225 * 90) / (99.99 * 31.1034)) + 5000
+
+    # The existing intrinsic formulas use the Nobitex IRT payload as rial.
+    # BrsApi explicitly returns these three market prices in toman, so convert
+    # only the finished intrinsic outputs for display/comparison. The formulas
+    # themselves remain unchanged.
+    gold_750_toman = gold_750 / 10
+    seke_toman = seke / 10
+    nim_seke_toman = nim_seke / 10
+
+    gold_bubble, gold_bubble_percent = bubble(
+        market["gold_18k"].price, gold_750_toman
+    )
+    coin_bubble, coin_bubble_percent = bubble(
+        market["coin_emami"].price, seke_toman
+    )
+    half_bubble, half_bubble_percent = bubble(
+        market["coin_half"].price, nim_seke_toman
+    )
 
     return (
-        f"Ounce: {fmt(ounce)} dollar\n"
-        f"Tether: {fmt(tether)} ریال\n\n"
-        f"قیمت ذاتی طلای 24 عیار:\n{fmt(gold_999)} ریال\n\n"
-        f"قیمت ذاتی طلای 18 عیار:\n{fmt(gold_750)} ریال\n\n"
-        f"قیمت ذاتی سکه:\n{fmt(seke)} ریال\n\n"
-        f"قیمت ذاتی نیم سکه:\n{fmt(nim_seke)} ریال\n\n"
-        f"قیمت ذاتی ربع سکه:\n{fmt(rob_seke)} ریال\n\n"
+        f"اونس جهانی: {fmt(ounce)} دلار\n"
+        f"تتر: {fmt(tether)} ریال\n\n"
+        f"طلای ۱۸ عیار\n"
+        f"ذاتی: {fmt(gold_750_toman)} تومان\n"
+        f"بازار: {fmt(market['gold_18k'].price)} تومان\n"
+        f"حباب: {signed_fmt(gold_bubble)} تومان ({signed_percent(gold_bubble_percent)})\n\n"
+        f"سکه امامی\n"
+        f"ذاتی: {fmt(seke_toman)} تومان\n"
+        f"بازار: {fmt(market['coin_emami'].price)} تومان\n"
+        f"حباب: {signed_fmt(coin_bubble)} تومان ({signed_percent(coin_bubble_percent)})\n\n"
+        f"نیم‌سکه\n"
+        f"ذاتی: {fmt(nim_seke_toman)} تومان\n"
+        f"بازار: {fmt(market['coin_half'].price)} تومان\n"
+        f"حباب: {signed_fmt(half_bubble)} تومان ({signed_percent(half_bubble_percent)})\n\n"
+        f"آخرین به‌روزرسانی بازار: {market_timestamp(market)}\n"
         f"Time: {tehran_time()} (Tehran)"
     )
+
+
+def safe_error_message(exc: Exception) -> str:
+    text = str(exc)
+    api_key = os.environ.get("BRSAPI_API_KEY", "").strip()
+    if api_key:
+        text = text.replace(api_key, "***")
+    return text
 
 
 def send_message(text: str) -> None:
@@ -171,7 +298,7 @@ def main() -> None:
     try:
         message = build_message()
     except Exception as exc:
-        message = f"Error fetching price data:\n{exc}\n\nTime: {tehran_time()} (Tehran)"
+        message = f"Error fetching price data:\n{safe_error_message(exc)}\n\nTime: {tehran_time()} (Tehran)"
     send_message(message)
 
 

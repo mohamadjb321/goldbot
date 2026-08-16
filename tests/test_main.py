@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import main
+import requests
 
 
 PAYLOAD = {
@@ -76,7 +77,79 @@ class BrsApiTests(unittest.TestCase):
                 "Cache-Control": "no-cache",
                 "Host": "Api.BrsApi.ir",
             },
-            timeout=30,
+            timeout=(10, 45),
+        )
+
+    def test_retries_timeout_then_succeeds(self):
+        response = Mock()
+        response.json.return_value = PAYLOAD
+        response.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"BRSAPI_API_KEY": "secret"}), patch(
+            "main.requests.get",
+            side_effect=[requests.ReadTimeout("slow"), response],
+        ) as request, patch("main.time.sleep") as sleep:
+            result = main.get_brsapi_market_prices()
+
+        self.assertEqual(result["gold_18k"].price, 19_079_400)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(5)
+
+    def test_uses_backoff_for_repeated_transient_failures(self):
+        response = Mock()
+        response.json.return_value = PAYLOAD
+        response.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"BRSAPI_API_KEY": "secret"}), patch(
+            "main.requests.get",
+            side_effect=[
+                requests.ReadTimeout("slow"),
+                requests.ConnectionError("temporary"),
+                response,
+            ],
+        ), patch("main.time.sleep") as sleep:
+            main.get_brsapi_market_prices()
+
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15])
+
+    def test_retries_retryable_http_status(self):
+        failed_response = Mock(status_code=503)
+        failure = requests.HTTPError("service unavailable", response=failed_response)
+        success = Mock()
+        success.json.return_value = PAYLOAD
+        success.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"BRSAPI_API_KEY": "secret"}), patch(
+            "main.requests.get", side_effect=[failure, success]
+        ) as request, patch("main.time.sleep") as sleep:
+            main.get_brsapi_market_prices()
+
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(5)
+
+    def test_does_not_retry_authentication_failure(self):
+        failed_response = Mock(status_code=401)
+        failure = requests.HTTPError("unauthorized", response=failed_response)
+
+        with patch.dict(os.environ, {"BRSAPI_API_KEY": "secret"}), patch(
+            "main.requests.get", side_effect=failure
+        ) as request, patch("main.time.sleep") as sleep:
+            with self.assertRaises(requests.HTTPError):
+                main.get_brsapi_market_prices()
+
+        request.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_fails_after_four_timeouts_without_partial_prices(self):
+        with patch.dict(os.environ, {"BRSAPI_API_KEY": "secret"}), patch(
+            "main.requests.get", side_effect=requests.ReadTimeout("slow")
+        ) as request, patch("main.time.sleep") as sleep:
+            with self.assertRaises(requests.ReadTimeout):
+                main.get_brsapi_market_prices()
+
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list], [5, 15, 30]
         )
 
     def test_bubble_amount_and_percent(self):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -14,6 +15,10 @@ KITCO_GOLD_URL = "https://www.kitco.com/charts/gold"
 TETHER_URL = os.getenv("TETHER_URL", "")
 NOBITEX_USDT_URL = "https://apiv2.nobitex.ir/v3/orderbook/USDTIRT"
 BRSAPI_GOLD_URL = "https://Api.BrsApi.ir/Market/Gold_Currency.php"
+BRSAPI_MAX_ATTEMPTS = 4
+BRSAPI_TIMEOUT = (10, 45)
+BRSAPI_RETRY_DELAYS = (5, 15, 30)
+BRSAPI_RETRYABLE_STATUSES = {406, 408, 425, 429, 500, 502, 503, 504, 522}
 
 MARKET_SYMBOLS = {
     "gold_18k": "IR_GOLD_18K",
@@ -91,21 +96,55 @@ def get_brsapi_market_prices() -> dict[str, MarketPrice]:
     if not api_key:
         raise ValueError("BRSAPI_API_KEY is not set")
 
-    response = requests.get(
-        BRSAPI_GOLD_URL,
-        params={"key": api_key},
-        headers={
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-            "User-Agent": "curl/8.7.1",
-            "Referer": "https://brsapi.ir/",
-            "Cache-Control": "no-cache",
-            "Host": "Api.BrsApi.ir",
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    return parse_brsapi_market_prices(response.json())
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+        "User-Agent": "curl/8.7.1",
+        "Referer": "https://brsapi.ir/",
+        "Cache-Control": "no-cache",
+        "Host": "Api.BrsApi.ir",
+    }
+
+    for attempt in range(1, BRSAPI_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(
+                BRSAPI_GOLD_URL,
+                params={"key": api_key},
+                headers=headers,
+                timeout=BRSAPI_TIMEOUT,
+            )
+            response.raise_for_status()
+            prices = parse_brsapi_market_prices(response.json())
+            if attempt > 1:
+                print(f"[BrsApi] request succeeded on attempt {attempt}", flush=True)
+            return prices
+        except Exception as exc:
+            retryable = is_retryable_brsapi_error(exc)
+            final_attempt = attempt == BRSAPI_MAX_ATTEMPTS
+            print(
+                f"[BrsApi] attempt {attempt}/{BRSAPI_MAX_ATTEMPTS} failed: "
+                f"{safe_error_message(exc)}",
+                flush=True,
+            )
+            if not retryable or final_attempt:
+                raise
+
+            delay = BRSAPI_RETRY_DELAYS[attempt - 1]
+            print(f"[BrsApi] retrying in {delay} seconds", flush=True)
+            time.sleep(delay)
+
+    raise RuntimeError("BrsApi retry loop exited unexpectedly")
+
+
+def is_retryable_brsapi_error(exc: Exception) -> bool:
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        return status in BRSAPI_RETRYABLE_STATUSES or bool(status and status >= 500)
+    # A successful HTTP response with incomplete or invalid JSON can be a
+    # transient upstream response. Retry it, but never reuse partial prices.
+    return isinstance(exc, ValueError)
 
 
 def html_lines(html: str) -> list[str]:

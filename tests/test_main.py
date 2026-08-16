@@ -107,8 +107,31 @@ class BrsApiTests(unittest.TestCase):
         self.assertIn("نیم‌سکه", report)
         self.assertIn("ذاتی: 92,672,688 تومان", report)
         self.assertIn("بازار: 96,000,000 تومان", report)
-        self.assertEqual(report.count("حباب:"), 3)
-        self.assertIn("تتر: 1,800,000 ریال", report)
+        directional_bubbles = report.count("حباب مثبت") + report.count("حباب منفی")
+        self.assertEqual(directional_bubbles, 3)
+        self.assertIn("تتر: <b>1,800,000 ریال</b>", report)
+        self.assertIn("<b>ارزش ذاتی و حباب طلا و سکه</b>", report)
+        self.assertNotIn("Time:", report)
+        self.assertIn("🕒 آخرین به‌روزرسانی: 1405/05/25 10:15", report)
+        self.assertNotIn("نیم‌سکه: 1405/", report)
+
+    def test_bubble_text_uses_directional_labels(self):
+        self.assertIn("🟢", main.bubble_text(-100, -2.5))
+        self.assertIn("حباب منفی", main.bubble_text(-100, -2.5))
+        self.assertIn("🔴", main.bubble_text(100, 2.5))
+        self.assertIn("حباب مثبت", main.bubble_text(100, 2.5))
+
+    def test_telegram_uses_html_parse_mode(self):
+        response = Mock()
+        response.json.return_value = {"ok": True}
+        response.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"BOT_TOKEN": "token", "CHAT_ID": "@Risktory"}), patch(
+            "main.requests.post", return_value=response
+        ) as request:
+            main.send_message("<b>report</b>")
+
+        self.assertEqual(request.call_args.kwargs["json"]["parse_mode"], "HTML")
 
 
 if __name__ == "__main__":

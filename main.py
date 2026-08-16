@@ -215,19 +215,26 @@ def signed_percent(value: float) -> str:
     return f"{value:+.1f}%"
 
 
-def market_timestamp(prices: dict[str, MarketPrice]) -> str:
-    timestamps = {(item.date, item.time) for item in prices.values()}
-    if len(timestamps) == 1:
-        date, time = next(iter(timestamps))
-        return f"{date} {time}"
-    return " | ".join(
-        f"{label}: {prices[key].date} {prices[key].time}"
-        for key, label in (
-            ("gold_18k", "طلا"),
-            ("coin_emami", "سکه"),
-            ("coin_half", "نیم‌سکه"),
-        )
+def bubble_text(amount: float, percent: float) -> str:
+    if amount > 0:
+        icon, label = "🔴", "حباب مثبت"
+    elif amount < 0:
+        icon, label = "🟢", "حباب منفی"
+    else:
+        icon, label = "⚪️", "بدون حباب"
+    return (
+        f"• {icon} <b>{label}:</b> {fmt(abs(amount))} تومان "
+        f"({abs(percent):.1f}٪)"
     )
+
+
+def market_timestamp(prices: dict[str, MarketPrice]) -> str:
+    latest = max(prices.values(), key=lambda item: (item.date, item.time))
+    return f"{latest.date} {latest.time}"
+
+
+def tehran_clock() -> str:
+    return datetime.now(ZoneInfo("Asia/Tehran")).strftime("%H:%M")
 
 
 def tehran_time() -> str:
@@ -263,22 +270,26 @@ def build_message() -> str:
     )
 
     return (
-        f"اونس جهانی: {fmt(ounce)} دلار\n"
-        f"تتر: {fmt(tether)} ریال\n\n"
-        f"طلای ۱۸ عیار\n"
-        f"ذاتی: {fmt(gold_750_toman)} تومان\n"
-        f"بازار: {fmt(market['gold_18k'].price)} تومان\n"
-        f"حباب: {signed_fmt(gold_bubble)} تومان ({signed_percent(gold_bubble_percent)})\n\n"
-        f"سکه امامی\n"
-        f"ذاتی: {fmt(seke_toman)} تومان\n"
-        f"بازار: {fmt(market['coin_emami'].price)} تومان\n"
-        f"حباب: {signed_fmt(coin_bubble)} تومان ({signed_percent(coin_bubble_percent)})\n\n"
-        f"نیم‌سکه\n"
-        f"ذاتی: {fmt(nim_seke_toman)} تومان\n"
-        f"بازار: {fmt(market['coin_half'].price)} تومان\n"
-        f"حباب: {signed_fmt(half_bubble)} تومان ({signed_percent(half_bubble_percent)})\n\n"
-        f"آخرین به‌روزرسانی بازار: {market_timestamp(market)}\n"
-        f"Time: {tehran_time()} (Tehran)"
+        f"🟡 <b>ارزش ذاتی و حباب طلا و سکه</b>\n"
+        f"🗓 تاریخ بازار: {market['gold_18k'].date} | ⏰ {tehran_clock()}\n\n"
+        f"🌍 اونس جهانی: <b>{fmt(ounce)} دلار</b>\n"
+        f"💵 تتر: <b>{fmt(tether)} ریال</b>\n\n"
+        f"🥇 <b>طلای ۱۸ عیار</b>\n"
+        f"• <b>بازار: {fmt(market['gold_18k'].price)} تومان</b>\n"
+        f"• ذاتی: {fmt(gold_750_toman)} تومان\n"
+        f"{bubble_text(gold_bubble, gold_bubble_percent)}\n\n"
+        f"🪙 <b>سکه امامی</b>\n"
+        f"• <b>بازار: {fmt(market['coin_emami'].price)} تومان</b>\n"
+        f"• ذاتی: {fmt(seke_toman)} تومان\n"
+        f"{bubble_text(coin_bubble, coin_bubble_percent)}\n\n"
+        f"🌗 <b>نیم‌سکه</b>\n"
+        f"• <b>بازار: {fmt(market['coin_half'].price)} تومان</b>\n"
+        f"• ذاتی: {fmt(nim_seke_toman)} تومان\n"
+        f"{bubble_text(half_bubble, half_bubble_percent)}\n\n"
+        f"🕒 آخرین به‌روزرسانی: {market_timestamp(market)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Risktory</b> | @Risktory\n"
+        f"روایت ریسک در بازارها"
     )
 
 
@@ -293,7 +304,12 @@ def safe_error_message(exc: Exception) -> str:
 def send_message(text: str) -> None:
     response = requests.post(
         f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
-        json={"chat_id": os.environ["CHAT_ID"], "text": text, "disable_web_page_preview": True},
+        json={
+            "chat_id": os.environ["CHAT_ID"],
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
         timeout=30,
     )
     response.raise_for_status()

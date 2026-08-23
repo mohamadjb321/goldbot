@@ -5,10 +5,7 @@ on:
   schedule:
     # Iran uses UTC+03:30 year-round. These target 09:10, 14:10,
     # 19:10 and 23:09 Tehran, 50 minutes before the requested slots.
-    - cron: "40 5 * * *"
-    - cron: "40 10 * * *"
-    - cron: "40 15 * * *"
-    - cron: "39 19 * * *"
+    - cron: "30 8,12,17 * * *"
 
 
 jobs:

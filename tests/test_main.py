@@ -1,5 +1,9 @@
 import os
+import json
 import unittest
+from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import main
@@ -34,6 +38,28 @@ PAYLOAD = {
 
 
 class BrsApiTests(unittest.TestCase):
+    def test_noon_publication_window_is_bounded_in_tehran(self):
+        zone = main.TEHRAN
+        self.assertFalse(main.publication_allowed(datetime(2026, 8, 29, 11, 59, tzinfo=zone)))
+        self.assertTrue(main.publication_allowed(datetime(2026, 8, 29, 12, 0, tzinfo=zone)))
+        self.assertTrue(main.publication_allowed(datetime(2026, 8, 29, 13, 29, tzinfo=zone)))
+        self.assertFalse(main.publication_allowed(datetime(2026, 8, 29, 13, 30, tzinfo=zone)))
+        self.assertTrue(main.publication_allowed(
+            datetime(2026, 8, 29, 18, 0, tzinfo=zone), allow_late_recovery=True
+        ))
+
+    def test_publication_state_is_date_and_slot_idempotent(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "published.json"
+            key = "2026-08-29:gold_intrinsic_noon"
+            self.assertFalse(main.already_published(key, path))
+            main.mark_published(
+                key, 123, path, datetime(2026, 8, 29, 12, 1, tzinfo=main.TEHRAN)
+            )
+            self.assertTrue(main.already_published(key, path))
+            state = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(state[key]["messageId"], 123)
+
     def test_parses_required_market_symbols_without_unit_conversion(self):
         result = main.parse_brsapi_market_prices(PAYLOAD)
 
@@ -196,15 +222,23 @@ class BrsApiTests(unittest.TestCase):
 
     def test_telegram_uses_html_parse_mode(self):
         response = Mock()
-        response.json.return_value = {"ok": True}
+        response.json.return_value = {"ok": True, "result": {"message_id": 77}}
         response.raise_for_status.return_value = None
 
         with patch.dict(os.environ, {"BOT_TOKEN": "token", "CHAT_ID": "@Risktory"}), patch(
             "main.requests.post", return_value=response
         ) as request:
-            main.send_message("<b>report</b>")
+            message_id = main.send_message("<b>report</b>")
 
         self.assertEqual(request.call_args.kwargs["json"]["parse_mode"], "HTML")
+        self.assertEqual(message_id, 77)
+
+    def test_workflow_runs_once_daily_at_noon_tehran(self):
+        workflow = Path(".github/workflows/goldbot.yml").read_text(encoding="utf-8")
+        self.assertIn('cron: "30 8 * * *"', workflow)
+        self.assertNotIn('cron: "30 8,12,17 * * *"', workflow)
+        self.assertIn("gold-noon-publication-state", workflow)
+        self.assertIn("git pull --rebase --autostash origin main", workflow)
 
 
 if __name__ == "__main__":

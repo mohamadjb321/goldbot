@@ -2,11 +2,25 @@ name: Gold Bot
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only; do not send Telegram or write state"
+        type: boolean
+        default: true
+      allow_late_recovery:
+        description: "Permit one intentional live recovery after the noon window"
+        type: boolean
+        default: false
   schedule:
-    # Iran uses UTC+03:30 year-round. These target 09:10, 14:10,
-    # 19:10 and 23:09 Tehran, 50 minutes before the requested slots.
-    - cron: "30 8,12,17 * * *"
+    # 08:30 UTC is exactly 12:00 Tehran; Iran has had no DST since 2022.
+    - cron: "30 8 * * *"
 
+permissions:
+  contents: write
+
+concurrency:
+  group: gold-noon-publication-state
+  cancel-in-progress: false
 
 jobs:
   send-gold-price:
@@ -15,6 +29,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,4 +46,22 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BRSAPI_API_KEY: ${{ secrets.BRSAPI_API_KEY }}
           TETHER_URL: ${{ vars.TETHER_URL }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          ALLOW_LATE_RECOVERY: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_late_recovery || 'false' }}
         run: python main.py
+
+      - name: Persist publication state
+        if: ${{ github.event_name == 'schedule' || inputs.dry_run == false }}
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain state/)" ]; then exit 0; fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add state/
+          git commit -m "state: gold noon publication [skip ci]"
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          echo "::warning::gold publication succeeded but state could not be persisted; do not rerun manually"
+          exit 0

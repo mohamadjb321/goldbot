@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -25,6 +27,10 @@ MARKET_SYMBOLS = {
     "coin_emami": "IR_COIN_EMAMI",
     "coin_half": "IR_COIN_HALF",
 }
+TEHRAN = ZoneInfo("Asia/Tehran")
+PUBLICATION_STATE_PATH = Path("state/published.json")
+NOON_MINUTES = 12 * 60
+RECOVERY_WINDOW_MINUTES = 90
 
 
 @dataclass(frozen=True)
@@ -277,7 +283,59 @@ def tehran_clock() -> str:
 
 
 def tehran_time() -> str:
-    return datetime.now(ZoneInfo("Asia/Tehran")).strftime("%Y-%m-%d %H:%M")
+    return datetime.now(TEHRAN).strftime("%Y-%m-%d %H:%M")
+
+
+def tehran_date_key(now: datetime | None = None) -> str:
+    current = now.astimezone(TEHRAN) if now else datetime.now(TEHRAN)
+    return current.strftime("%Y-%m-%d")
+
+
+def publication_allowed(
+    now: datetime | None = None,
+    *,
+    allow_late_recovery: bool = False,
+) -> bool:
+    current = now.astimezone(TEHRAN) if now else datetime.now(TEHRAN)
+    minutes = current.hour * 60 + current.minute
+    if minutes < NOON_MINUTES:
+        return False
+    return allow_late_recovery or minutes < NOON_MINUTES + RECOVERY_WINDOW_MINUTES
+
+
+def publication_key(now: datetime | None = None) -> str:
+    return f"{tehran_date_key(now)}:gold_intrinsic_noon"
+
+
+def _read_publication_state(path: Path = PUBLICATION_STATE_PATH) -> dict[str, dict[str, object]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("Invalid publication state")
+    return data
+
+
+def already_published(key: str, path: Path = PUBLICATION_STATE_PATH) -> bool:
+    return key in _read_publication_state(path)
+
+
+def mark_published(
+    key: str,
+    message_id: int,
+    path: Path = PUBLICATION_STATE_PATH,
+    now: datetime | None = None,
+) -> None:
+    state = _read_publication_state(path)
+    state[key] = {
+        "messageId": message_id,
+        "publishedAtTehran": (now or datetime.now(TEHRAN)).astimezone(TEHRAN).isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def build_message() -> str:
@@ -340,7 +398,7 @@ def safe_error_message(exc: Exception) -> str:
     return text
 
 
-def send_message(text: str) -> None:
+def send_message(text: str) -> int:
     response = requests.post(
         f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
         json={
@@ -355,9 +413,23 @@ def send_message(text: str) -> None:
     data = response.json()
     if not data.get("ok"):
         raise RuntimeError(data)
+    message_id = data.get("result", {}).get("message_id")
+    if not isinstance(message_id, int):
+        raise RuntimeError("Telegram response carried no message id")
+    return message_id
 
 
 def main() -> None:
+    dry_run = os.getenv("DRY_RUN", "").lower() == "true"
+    allow_late_recovery = os.getenv("ALLOW_LATE_RECOVERY", "").lower() == "true"
+    now = datetime.now(TEHRAN)
+    key = publication_key(now)
+    if not dry_run and not publication_allowed(now, allow_late_recovery=allow_late_recovery):
+        print(json.dumps({"status": "skipped_schedule_guard", "publicationKey": key}))
+        return
+    if not dry_run and already_published(key):
+        print(json.dumps({"status": "already_published", "publicationKey": key}))
+        return
     try:
         message = build_message()
     except Exception as exc:
@@ -366,7 +438,13 @@ def main() -> None:
         raise RuntimeError(
             f"Error fetching price data: {safe_error_message(exc)}"
         ) from exc
-    send_message(message)
+    if dry_run:
+        print(message)
+        print(json.dumps({"status": "dry_run", "publicationKey": key}))
+        return
+    message_id = send_message(message)
+    mark_published(key, message_id, now=now)
+    print(json.dumps({"status": "published", "publicationKey": key, "messageId": message_id}))
 
 
 if __name__ == "__main__":

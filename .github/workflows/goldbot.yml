@@ -7,19 +7,26 @@ on:
         description: "Preview only; do not send Telegram or write state"
         type: boolean
         default: true
+      slot:
+        description: "Publication slot"
+        type: choice
+        options: [noon, afternoon, night]
+        default: noon
       allow_late_recovery:
-        description: "Permit one intentional live recovery after the noon window"
+        description: "Permit one intentional live recovery after the selected slot window"
         type: boolean
         default: false
   schedule:
-    # 08:30 UTC is exactly 12:00 Tehran; Iran has had no DST since 2022.
+    # Tehran is UTC+03:30 year-round: 12:00, 16:00 and 21:00.
     - cron: "30 8 * * *"
+    - cron: "30 12 * * *"
+    - cron: "30 17 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: gold-noon-publication-state
+  group: gold-publication-state
   cancel-in-progress: false
 
 jobs:
@@ -48,6 +55,7 @@ jobs:
           TETHER_URL: ${{ vars.TETHER_URL }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           ALLOW_LATE_RECOVERY: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_late_recovery || 'false' }}
+          GOLD_SLOT: ${{ github.event_name == 'workflow_dispatch' && inputs.slot || '' }}
         run: python main.py
 
       - name: Persist publication state
@@ -58,7 +66,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add state/
-          git commit -m "state: gold noon publication [skip ci]"
+          git commit -m "state: gold publication [skip ci]"
           for attempt in 1 2 3; do
             git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
             sleep 5

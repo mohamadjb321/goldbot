@@ -29,8 +29,12 @@ MARKET_SYMBOLS = {
 }
 TEHRAN = ZoneInfo("Asia/Tehran")
 PUBLICATION_STATE_PATH = Path("state/published.json")
-NOON_MINUTES = 12 * 60
 RECOVERY_WINDOW_MINUTES = 90
+SLOT_MINUTES = {
+    "noon": 12 * 60,
+    "afternoon": 16 * 60,
+    "night": 21 * 60,
+}
 
 
 @dataclass(frozen=True)
@@ -291,20 +295,34 @@ def tehran_date_key(now: datetime | None = None) -> str:
     return current.strftime("%Y-%m-%d")
 
 
+def publication_slot(now: datetime | None = None) -> str | None:
+    current = now.astimezone(TEHRAN) if now else datetime.now(TEHRAN)
+    minutes = current.hour * 60 + current.minute
+    eligible = [name for name, due in SLOT_MINUTES.items()
+                if due <= minutes < due + RECOVERY_WINDOW_MINUTES]
+    return eligible[-1] if eligible else None
+
+
 def publication_allowed(
+    slot: str,
     now: datetime | None = None,
     *,
     allow_late_recovery: bool = False,
 ) -> bool:
     current = now.astimezone(TEHRAN) if now else datetime.now(TEHRAN)
+    if slot not in SLOT_MINUTES:
+        raise ValueError(f"Unknown gold publication slot: {slot}")
     minutes = current.hour * 60 + current.minute
-    if minutes < NOON_MINUTES:
+    due = SLOT_MINUTES[slot]
+    if minutes < due:
         return False
-    return allow_late_recovery or minutes < NOON_MINUTES + RECOVERY_WINDOW_MINUTES
+    return allow_late_recovery or minutes < due + RECOVERY_WINDOW_MINUTES
 
 
-def publication_key(now: datetime | None = None) -> str:
-    return f"{tehran_date_key(now)}:gold_intrinsic_noon"
+def publication_key(slot: str, now: datetime | None = None) -> str:
+    if slot not in SLOT_MINUTES:
+        raise ValueError(f"Unknown gold publication slot: {slot}")
+    return f"{tehran_date_key(now)}:gold_intrinsic_{slot}"
 
 
 def _read_publication_state(path: Path = PUBLICATION_STATE_PATH) -> dict[str, dict[str, object]]:
@@ -423,8 +441,13 @@ def main() -> None:
     dry_run = os.getenv("DRY_RUN", "").lower() == "true"
     allow_late_recovery = os.getenv("ALLOW_LATE_RECOVERY", "").lower() == "true"
     now = datetime.now(TEHRAN)
-    key = publication_key(now)
-    if not dry_run and not publication_allowed(now, allow_late_recovery=allow_late_recovery):
+    requested_slot = os.getenv("GOLD_SLOT", "").strip()
+    slot = requested_slot or publication_slot(now)
+    if slot is None:
+        print(json.dumps({"status": "skipped_schedule_guard", "reason": "no_active_slot"}))
+        return
+    key = publication_key(slot, now)
+    if not dry_run and not publication_allowed(slot, now, allow_late_recovery=allow_late_recovery):
         print(json.dumps({"status": "skipped_schedule_guard", "publicationKey": key}))
         return
     if not dry_run and already_published(key):

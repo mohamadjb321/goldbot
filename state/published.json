@@ -334,5 +334,9 @@
   "2026-10-23:gold_intrinsic_noon": {
     "messageId": 1419,
     "publishedAtTehran": "2026-10-23T12:20:28.514619+03:30"
+  },
+  "2026-10-23:gold_intrinsic_afternoon": {
+    "messageId": 1420,
+    "publishedAtTehran": "2026-10-23T16:20:31.376093+03:30"
   }
 }

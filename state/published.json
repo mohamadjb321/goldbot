@@ -482,5 +482,9 @@
   "2026-11-04:gold_intrinsic_night": {
     "messageId": 1600,
     "publishedAtTehran": "2026-11-04T21:20:15.961056+03:30"
+  },
+  "2026-11-05:gold_intrinsic_noon": {
+    "messageId": 1603,
+    "publishedAtTehran": "2026-11-05T12:20:12.044620+03:30"
   }
 }
